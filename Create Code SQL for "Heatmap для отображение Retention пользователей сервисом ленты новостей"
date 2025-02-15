@@ -1,0 +1,18 @@
+SELECT toString(start_day) start_day,
+       toString(day) day,
+                     count(user_id) AS users
+FROM
+  (SELECT *
+   FROM
+     (SELECT user_id,
+             min(toDate(time)) AS start_day
+      FROM simulator_20250120.feed_actions
+      GROUP BY user_id) t1
+   JOIN
+     (SELECT DISTINCT user_id,
+                      toDate(time) AS day, source
+      FROM simulator_20250120.feed_actions) t2 USING user_id
+   WHERE start_day >= today() - 30 AND source = 'ads')
+GROUP BY start_day,
+         day
+order by start_day ASC, day ASC
