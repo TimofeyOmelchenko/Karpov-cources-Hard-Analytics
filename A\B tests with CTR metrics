@@ -1,0 +1,156 @@
+#код проведениея t-теста для тестовых групп сайта, где сделали изменение алгоритма рекомендации постов. Метрика - CTR
+
+import pandahouse
+import scipy.stats as stats
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+connection = {
+    'host': 'https://clickhouse.lab.karpov.courses',
+    'password': 'dpo_python_2020',
+    'user': 'student',
+    'database': 'simulator'
+}
+
+q = """
+SELECT exp_group,
+user_id,
+sum(action = 'like') as likes,
+sum(action = 'view') as views,
+likes/views as ctr
+FROM simulator_20250120.feed_actions
+WHERE toDate(time) between '2025-01-03' and '2025-01-09'
+and exp_group in (1,2)
+GROUP BY exp_group, user_id
+"""
+
+df = pandahouse.read_clickhouse(q, connection=connection)
+
+# T-тест
+stats.ttest_ind(df[df.exp_group == 1].ctr,
+df[df.exp_group == 2].ctr,
+equal_var=False)
+
+groups = sns.histplot(data = df,
+x='ctr',
+hue='exp_group',
+palette = ['r', 'b'],
+alpha=0.5,
+kde=False)
+
+stats.mannwhitneyu(df[df.exp_group == 1].ctr,
+df[df.exp_group == 2].ctr,
+alternative = 'two-sided')
+
+print(f"Результаты статистических тестов:")
+print(f"T-тест: t-статистика = {t_stat:.3e}, p-value = {p_ttest:.5f}")
+print(f"Манна-Уитни: U-статистика = {U_stat:.3e}, p-value = {p_mannwhitney:.3e}")
+----------------------------------------------------------------------------------------------------------------------------------------------
+#код проведениея пуассоновский бутстрепа для тех же групп
+
+import pandahouse
+import scipy.stats as stats
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+# Пуассоновский бутстреп для подсчета разницы в CTR для 1 и 2
+
+def bootstrap(likes1, views1, likes2, views2, n_bootstrap=2000):
+    poisson_bootstraps1 = stats.poisson(1).rvs(
+    (n_bootstrap, len(likes1))).astype(np.int64)
+    poisson_bootstraps2 = stats.poisson(1).rvs(
+    (n_bootstrap, len(likes2))).astype(np.int64)
+    globalCTR1 = (poisson_bootstraps1*likes1).sum(axis=1)/(poisson_bootstraps1*views1).sum(axis=1)
+    globalCTR2 = (poisson_bootstraps2*likes2).sum(axis=1)/(poisson_bootstraps2*views2).sum(axis=1)
+    return globalCTR1, globalCTR2
+
+q = """
+SELECT exp_group,
+user_id,
+sum(action = 'like') as likes,
+sum(action = 'view') as views,
+likes/views as ctr
+FROM simulator_20250120.feed_actions
+WHERE toDate(time) between '2025-01-03' and '2025-01-09'
+and exp_group in (1,2)
+GROUP BY exp_group, user_id
+"""
+
+df = pandahouse.read_clickhouse(q, connection=connection)
+likes1 = df[df.exp_group == 1].likes.to_numpy()
+views1 = df[df.exp_group == 1].views.to_numpy()
+likes2 = df[df.exp_group == 2].likes.to_numpy()
+views2 = df[df.exp_group == 2].views.to_numpy()
+ctr1, ctr2 = bootstrap(likes1, views1, likes2, views2)
+plt.figure(figsize=(7, 5))
+sns.histplot(ctr1, color='red', label='CTR1', alpha=0.5, kde=True)
+sns.histplot(ctr2, color='blue', label='CTR2', alpha=0.5, kde=True)
+
+plt.title("CTR для 2 и 1 групп в методе Пуассоновский бутстрепа")
+
+plt.figure(figsize=(7, 5))
+sns.histplot(ctr1 - ctr2)
+plt.title("Разница между глобальными CTR в методе Пуассоновский бутстрепа (1ая группа - 2ая группа)")
+-----------------------------------------------------------------------------------------------------------------------------------------
+#код проведениея бакетного распределения для тех же групп
+
+import pandahouse
+import scipy.stats as stats
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Подключение к ClickHouse
+connection = {
+    'host': 'https://clickhouse.lab.karpov.courses',
+    'password': 'dpo_python_2020',
+    'user': 'student',
+    'database': 'simulator'
+}
+
+q = """
+SELECT exp_group, bucket,
+sum(likes)/sum(views) as bucket_ctr,
+quantileExact(0.9)(ctr) as ctr9
+FROM (SELECT exp_group,
+xxHash64(user_id)%50 as bucket,
+user_id,
+sum(action = 'like') as likes,
+sum(action = 'view') as views,
+likes/views as ctr
+FROM simulator_20250120.feed_actions
+WHERE toDate(time) between '2025-01-03' and '2025-01-09'
+and exp_group in (1,2)
+GROUP BY exp_group, bucket, user_id)
+GROUP BY exp_group, bucket
+"""
+
+df = pandahouse.read_clickhouse(q, connection=connection)
+
+#тест Манна-Уитни видит отличие
+U_statistic, p_value_mw = stats.mannwhitneyu(
+    df[df.exp_group == 1]['bucket_ctr'],
+    df[df.exp_group == 2]['bucket_ctr'],
+    alternative='two-sided'
+)
+print(f"Тест Манна-Уитни:")
+print(f"U-статистика = {U_statistic:.3f}")
+print(f"p-value = {p_value_mw:.3e}\n")
+
+sns.histplot(df[df.exp_group == 2].bucket_ctr)
+plt.title("Распределение для 2 группы в Бакетном распределении")
+
+plt.figure(figsize=(7, 5))
+sns.histplot(df[df.exp_group == 1].bucket_ctr)
+
+plt.title("Распределение для 1 группы в Бакетном распределении")
+#и t-тест тоже
+t_statistic, p_value_t = stats.ttest_ind(
+    df[df.exp_group == 1]['bucket_ctr'],
+    df[df.exp_group == 2]['bucket_ctr'],
+    equal_var=False
+)
+print(f" T-тест:")
+print(f"T-статистика = {t_statistic:.3f}")
+print(f"p-value = {p_value_t:.3e}")
